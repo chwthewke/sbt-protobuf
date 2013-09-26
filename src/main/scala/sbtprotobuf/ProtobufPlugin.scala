@@ -54,11 +54,11 @@ object ProtobufPlugin extends Plugin {
     try {
       val schemas = (srcDir ** "*.proto").get.map(_.absolutePath)
       val incPath = includePaths.map("-I" + _.absolutePath)
-      val pluginDef = plgExe.map(f => "--plugin=%s=%s".format(plg, f.absolutePath))
+      val pluginDef = plgExe.map(f => "--plugin=protoc-gen-%s=%s".format(plg, f.absolutePath))
       val pluginOut = "--%s_out=%s".format(plg, target.absolutePath)
-      val proc = Process(
-        protocCommand,
-        incPath ++ pluginDef ++ Seq(pluginOut) ++ schemas)
+
+      val protocArgs: Seq[String] = incPath ++ pluginDef ++ Seq(pluginOut) ++ schemas
+      val proc = Process(protocCommand, protocArgs)
       proc ! log
     } catch { case e: Exception =>
       throw new RuntimeException("error occured while compiling protobuf files: %s" format(e.getMessage), e)
