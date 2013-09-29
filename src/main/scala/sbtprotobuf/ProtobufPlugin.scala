@@ -14,8 +14,7 @@ object ProtobufPlugin extends Plugin {
   val protoc = SettingKey[String]("protobuf-protoc", "The path+name of the protoc executable.")
   val externalIncludePath = SettingKey[File]("protobuf-external-include-path", "The path to which protobuf:library-dependencies are extracted and which is used as protobuf:include-path for protoc")
 
-  val plugin = SettingKey[String]("protobuf-plugin", "The name of the plugin to use with protoc.")
-  val pluginExecutable = SettingKey[Option[File]]("protobuf-plugin-executable", "The executable for the protoc plugin, needed when it is not a default plugin.")
+  val plugins = SettingKey[Seq[ProtocPlugin]]("protobuf-plugins", "The name, output directory and optional executables of the plugins to use with protoc.")
 
   val generate = TaskKey[Seq[File]]("protobuf-generate", "Compile the protobuf sources.")
   val unpackDependencies = TaskKey[UnpackedDependencies]("protobuf-unpack-dependencies", "Unpack dependencies.")
@@ -26,8 +25,7 @@ object ProtobufPlugin extends Plugin {
     externalIncludePath <<= target(_ / "protobuf_external"),
     protoc := "protoc",
     version := "2.4.1",
-    plugin := "java",
-    pluginExecutable := None,
+    plugins <<= (javaSource in protobufConfig) { s => Seq(ProtocPlugin("java", s, None)) },
 
     managedClasspath <<= (classpathTypes, update) map { (ct, report) =>
       Classpaths.managedJars(protobufConfig, ct, report)
@@ -42,7 +40,7 @@ object ProtobufPlugin extends Plugin {
 
   )) ++ Seq[Setting[_]](
     sourceGenerators in Compile <+= generate in protobufConfig,
-    managedSourceDirectories in Compile <+= javaSource in protobufConfig,
+    managedSourceDirectories in Compile <++= (plugins in protobufConfig) {_.map(_.outputDirectory)},
     cleanFiles <+= javaSource in protobufConfig,
     libraryDependencies <+= (version in protobufConfig)("com.google.protobuf" % "protobuf-java" % _),
     ivyConfigurations += protobufConfig
@@ -50,14 +48,18 @@ object ProtobufPlugin extends Plugin {
 
   case class UnpackedDependencies(dir: File, files: Seq[File])
 
-  private def executeProtoc(protocCommand: String, srcDir: File, target: File, includePaths: Seq[File], plg: String, plgExe: Option[File], log: Logger) =
+  case class ProtocPlugin(name: String, outputDirectory: File, executable: Option[File]) {
+    def args: Seq[String] = Seq("--%s_out=%s".format(name, outputDirectory.absolutePath)) ++
+      executable.map(exe => "--plugin=protoc-gen-%s=%s".format(name, exe.absolutePath))
+  }
+
+  private def executeProtoc(protocCommand: String, srcDir: File, target: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) =
     try {
       val schemas = (srcDir ** "*.proto").get.map(_.absolutePath)
       val incPath = includePaths.map("-I" + _.absolutePath)
-      val pluginDef = plgExe.map(f => "--plugin=protoc-gen-%s=%s".format(plg, f.absolutePath))
-      val pluginOut = "--%s_out=%s".format(plg, target.absolutePath)
+      val plugins = plg.flatMap(_.args)
 
-      val protocArgs: Seq[String] = incPath ++ pluginDef ++ Seq(pluginOut) ++ schemas
+      val protocArgs: Seq[String] = incPath ++ plugins ++ schemas
       val proc = Process(protocCommand, protocArgs)
       proc ! log
     } catch { case e: Exception =>
@@ -65,13 +67,13 @@ object ProtobufPlugin extends Plugin {
     }
 
 
-  private def compile(protocCommand: String, srcDir: File, target: File, includePaths: Seq[File], plg: String, plgExe: Option[File], log: Logger) = {
+  private def compile(protocCommand: String, srcDir: File, target: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) = {
     val schemas = (srcDir ** "*.proto").get
     target.mkdirs()
     log.info("Compiling %d protobuf files to %s".format(schemas.size, target))
     schemas.foreach { schema => log.info("Compiling schema %s" format schema) }
 
-    val exitCode = executeProtoc(protocCommand, srcDir, target, includePaths, plg, plgExe, log)
+    val exitCode = executeProtoc(protocCommand, srcDir, target, includePaths, plg, log)
     if (exitCode != 0)
       sys.error("protoc returned exit code: %d" format exitCode)
 
@@ -87,10 +89,10 @@ object ProtobufPlugin extends Plugin {
     }
   }
 
-  private def sourceGeneratorTask = (streams, sourceDirectory in protobufConfig, javaSource in protobufConfig, includePaths in protobufConfig, cacheDirectory, protoc, plugin, pluginExecutable) map {
-    (out, srcDir, targetDir, includePaths, cache, protocCommand, plg, plgExe) =>
+  private def sourceGeneratorTask = (streams, sourceDirectory in protobufConfig, javaSource in protobufConfig, includePaths in protobufConfig, cacheDirectory, protoc, plugins) map {
+    (out, srcDir, targetDir, includePaths, cache, protocCommand, plg) =>
       val cachedCompile = FileFunction.cached(cache / "protobuf", inStyle = FilesInfo.lastModified, outStyle = FilesInfo.exists) { (in: Set[File]) =>
-        compile(protocCommand, srcDir, targetDir, includePaths, plg, plgExe, out.log)
+        compile(protocCommand, srcDir, targetDir, includePaths, plg, out.log)
       }
       cachedCompile((srcDir ** "*.proto").get.toSet).toSeq
   }
