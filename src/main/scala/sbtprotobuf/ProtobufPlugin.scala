@@ -25,7 +25,7 @@ object ProtobufPlugin extends Plugin {
     externalIncludePath <<= target(_ / "protobuf_external"),
     protoc := "protoc",
     version := "2.4.1",
-    plugins <<= (javaSource in protobufConfig) { s => Seq(ProtocPlugin("java", s, None)) },
+    plugins <<= (javaSource in protobufConfig) { s => Seq(ProtocPlugin("java", s, None, _ ** "*.java")) },
 
     managedClasspath <<= (classpathTypes, update) map { (ct, report) =>
       Classpaths.managedJars(protobufConfig, ct, report)
@@ -41,19 +41,21 @@ object ProtobufPlugin extends Plugin {
   )) ++ Seq[Setting[_]](
     sourceGenerators in Compile <+= generate in protobufConfig,
     managedSourceDirectories in Compile <++= (plugins in protobufConfig) {_.map(_.outputDirectory)},
-    cleanFiles <+= javaSource in protobufConfig,
+    cleanFiles <++= (plugins in protobufConfig) {_.map(_.outputDirectory)},
     libraryDependencies <+= (version in protobufConfig)("com.google.protobuf" % "protobuf-java" % _),
     ivyConfigurations += protobufConfig
   )
 
   case class UnpackedDependencies(dir: File, files: Seq[File])
 
-  case class ProtocPlugin(name: String, outputDirectory: File, executable: Option[File]) {
+  case class ProtocPlugin(name: String, outputDirectory: File, executable: Option[File], filter: File => PathFinder) {
     def args: Seq[String] = Seq("--%s_out=%s".format(name, outputDirectory.absolutePath)) ++
       executable.map(exe => "--plugin=protoc-gen-%s=%s".format(name, exe.absolutePath))
+
+    def generated: Seq[File] = filter(outputDirectory).get
   }
 
-  private def executeProtoc(protocCommand: String, srcDir: File, target: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) =
+  private def executeProtoc(protocCommand: String, srcDir: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) =
     try {
       val schemas = (srcDir ** "*.proto").get.map(_.absolutePath)
       val incPath = includePaths.map("-I" + _.absolutePath)
@@ -67,17 +69,18 @@ object ProtobufPlugin extends Plugin {
     }
 
 
-  private def compile(protocCommand: String, srcDir: File, target: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) = {
+  private def compile(protocCommand: String, srcDir: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) = {
     val schemas = (srcDir ** "*.proto").get
-    target.mkdirs()
-    log.info("Compiling %d protobuf files to %s".format(schemas.size, target))
+    plg.foreach(_.outputDirectory.mkdirs())
+
+    log.info("Compiling %d protobuf files to %s".format(schemas.size, plg.map(_.outputDirectory).mkString(", ")))
     schemas.foreach { schema => log.info("Compiling schema %s" format schema) }
 
-    val exitCode = executeProtoc(protocCommand, srcDir, target, includePaths, plg, log)
+    val exitCode = executeProtoc(protocCommand, srcDir, includePaths, plg, log)
     if (exitCode != 0)
       sys.error("protoc returned exit code: %d" format exitCode)
 
-    (target ** "*.java").get.toSet
+    plg.flatMap(_.generated).toSet
   }
 
   private def unpack(deps: Seq[File], extractTarget: File, log: Logger): Seq[File] = {
@@ -89,10 +92,10 @@ object ProtobufPlugin extends Plugin {
     }
   }
 
-  private def sourceGeneratorTask = (streams, sourceDirectory in protobufConfig, javaSource in protobufConfig, includePaths in protobufConfig, cacheDirectory, protoc, plugins) map {
-    (out, srcDir, targetDir, includePaths, cache, protocCommand, plg) =>
+  private def sourceGeneratorTask = (streams, sourceDirectory in protobufConfig, includePaths in protobufConfig, cacheDirectory, protoc, plugins) map {
+    (out, srcDir, includePaths, cache, protocCommand, plg) =>
       val cachedCompile = FileFunction.cached(cache / "protobuf", inStyle = FilesInfo.lastModified, outStyle = FilesInfo.exists) { (in: Set[File]) =>
-        compile(protocCommand, srcDir, targetDir, includePaths, plg, out.log)
+        compile(protocCommand, srcDir, includePaths, plg, out.log)
       }
       cachedCompile((srcDir ** "*.proto").get.toSet).toSeq
   }
