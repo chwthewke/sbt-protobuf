@@ -14,6 +14,8 @@ object ProtobufPlugin extends Plugin {
   val protoc = SettingKey[String]("protobuf-protoc", "The path+name of the protoc executable.")
   val externalIncludePath = SettingKey[File]("protobuf-external-include-path", "The path to which protobuf:library-dependencies are extracted and which is used as protobuf:include-path for protoc")
 
+  val dependOnProtobufJava = SettingKey[Boolean]("protobuf-depend-protobuf-java", "Whether to add protobuf-kava as a library dependency.")
+
   val plugins = SettingKey[Seq[ProtocPlugin]]("protobuf-plugins", "The name, output directory and optional executables of the plugins to use with protoc.")
 
   val generate = TaskKey[Seq[File]]("protobuf-generate", "Compile the protobuf sources.")
@@ -26,6 +28,8 @@ object ProtobufPlugin extends Plugin {
     protoc := "protoc",
     version := "2.4.1",
     plugins <<= (javaSource in protobufConfig) { s => Seq(ProtocPlugin("java", s, None, _ ** "*.java")) },
+    dependOnProtobufJava <<= (plugins in protobufConfig) (_.exists(plg => plg.name == "java" && plg.executable == None)),
+
 
     managedClasspath <<= (classpathTypes, update) map { (ct, report) =>
       Classpaths.managedJars(protobufConfig, ct, report)
@@ -42,7 +46,7 @@ object ProtobufPlugin extends Plugin {
     sourceGenerators in Compile <+= generate in protobufConfig,
     managedSourceDirectories in Compile <++= (plugins in protobufConfig) {_.map(_.outputDirectory)},
     cleanFiles <++= (plugins in protobufConfig) {_.map(_.outputDirectory)},
-    libraryDependencies <+= (version in protobufConfig)("com.google.protobuf" % "protobuf-java" % _),
+    libraryDependencies <++= (plugins in protobufConfig, version in protobufConfig)(protobufJavaDependency),
     ivyConfigurations += protobufConfig
   )
 
@@ -54,6 +58,11 @@ object ProtobufPlugin extends Plugin {
 
     def generated: Seq[File] = filter(outputDirectory).get
   }
+
+  private def protobufJavaDependency(plugins: Seq[ProtocPlugin], version: String): Seq[ModuleID] =
+    if (plugins.exists(pl => pl.name == "java" && pl.executable == None))
+      Seq("com.google.protobuf" % "protobuf-java" % version)
+    else Nil
 
   private def executeProtoc(protocCommand: String, srcDir: File, includePaths: Seq[File], plg: Seq[ProtocPlugin], log: Logger) =
     try {
